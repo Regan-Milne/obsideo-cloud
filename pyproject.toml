@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsideo"
+version = "0.1.0"
+description = "Encrypted storage we can't read - save, browse, and sync whatever you want, from your terminal"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "boto3>=1.28",
+    "cryptography>=41.0",
+]
+
+[project.urls]
+Homepage = "https://obsideo.io"
+
+[project.scripts]
+obsideo = "obsideo.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["obsideo*", "obsideo_core*"]

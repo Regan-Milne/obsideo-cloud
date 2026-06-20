@@ -1,0 +1,13 @@
+.env
+.env.*
+*.secrets
+credentials
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.db
+.pytest_cache/
+.claude/
+obsideo-sync/
