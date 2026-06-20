@@ -109,3 +109,20 @@ def test_put_into_subdir(shell, tmp_path):
     sh.do_cd("projects")
     sh.do_put(str(src))
     assert "projects/f.bin" in fake.objs
+
+
+def test_tokenizer_handles_quoted_spaced_windows_paths():
+    from obsideo.cli import _tokens, _unquote
+    # Quoted Windows path with spaces stays one token, quotes stripped, backslashes kept.
+    assert _tokens(r'"C:\a b\Screenshot 1.png"') == [r"C:\a b\Screenshot 1.png"]
+    assert _tokens(r'"C:\a b\f.png" rename.png') == [r"C:\a b\f.png", "rename.png"]
+    assert _unquote('"my file.txt"') == "my file.txt"
+    assert _unquote("plain.txt") == "plain.txt"
+
+
+def test_put_quoted_spaced_path(shell, tmp_path):
+    sh, fake, tmp = shell
+    src = tmp / "my report.txt"
+    src.write_bytes(b"hello")
+    sh.do_put(f'"{src}"')
+    assert "my report.txt" in fake.objs

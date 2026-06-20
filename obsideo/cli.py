@@ -9,6 +9,7 @@ leaves, so Obsideo can't read it. An interactive shell plus one-shot commands.
 """
 
 import cmd
+import shlex
 import sys
 import urllib.error
 import urllib.request
@@ -16,6 +17,24 @@ import json
 from pathlib import Path
 
 from obsideo_core import config, crypto, identity, login, storage
+
+
+def _unquote(s: str) -> str:
+    """Strip one layer of matching surrounding quotes."""
+    s = s.strip()
+    if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+        return s[1:-1]
+    return s
+
+
+def _tokens(arg: str) -> list[str]:
+    """Tokenize a command line respecting quotes, Windows-path-safe (backslashes
+    are not escape characters). 'put "C:\\a b\\f.png" name' -> ['C:\\a b\\f.png','name']."""
+    try:
+        toks = shlex.split(arg, posix=False)
+    except ValueError:
+        toks = arg.split()
+    return [_unquote(t) for t in toks]
 
 
 def _human(n: int | None) -> str:
@@ -100,7 +119,8 @@ class ObsideoShell(cmd.Cmd):
         """List files and folders. Usage: ls [path]"""
         if not self._require_login():
             return
-        prefix = self._resolve(arg.strip()) if arg.strip() else self._cwd
+        target = _unquote(arg.strip())
+        prefix = self._resolve(target) if target else self._cwd
         try:
             resp = storage.list_prefix(prefix)
         except Exception as e:
@@ -116,7 +136,7 @@ class ObsideoShell(cmd.Cmd):
     # ── cd / pwd ──────────────────────────────────────────────────────────────
     def do_cd(self, arg):
         """Change directory. Usage: cd <path> | cd .. | cd /"""
-        path = arg.strip()
+        path = _unquote(arg.strip())
         if not path or path == "/":
             self._cwd = ""
         elif path == "..":
@@ -142,7 +162,7 @@ class ObsideoShell(cmd.Cmd):
         """Upload a local file. Usage: put <local_path> [remote_name] [--no-encrypt]"""
         if not self._require_login():
             return
-        parts = arg.strip().split()
+        parts = _tokens(arg)
         if not parts:
             print("Usage: put <local_path> [remote_name] [--no-encrypt]")
             return
@@ -173,7 +193,7 @@ class ObsideoShell(cmd.Cmd):
         """Download a file. Usage: get <remote_file> [local_path]"""
         if not self._require_login():
             return
-        parts = arg.strip().split()
+        parts = _tokens(arg)
         if not parts:
             print("Usage: get <remote_file> [local_path]")
             return
@@ -200,7 +220,7 @@ class ObsideoShell(cmd.Cmd):
         """Delete a file. Usage: rm <remote_file>"""
         if not self._require_login():
             return
-        name = arg.strip()
+        name = _unquote(arg.strip())
         if not name:
             print("Usage: rm <remote_file>")
             return
@@ -216,7 +236,7 @@ class ObsideoShell(cmd.Cmd):
         """Create a folder. Usage: mkdir <name>"""
         if not self._require_login():
             return
-        name = arg.strip()
+        name = _unquote(arg.strip())
         if not name:
             print("Usage: mkdir <name>")
             return
@@ -231,7 +251,7 @@ class ObsideoShell(cmd.Cmd):
         """Show object metadata. Usage: info <remote_file>"""
         if not self._require_login():
             return
-        name = arg.strip()
+        name = _unquote(arg.strip())
         if not name:
             print("Usage: info <remote_file>")
             return
