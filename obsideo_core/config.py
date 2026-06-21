@@ -17,7 +17,8 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "bucket": "obsideo",
-    "encrypt": True,
+    "encrypt": True,          # encrypt file contents
+    "encrypt_names": True,    # encrypt file/folder names (metadata privacy)
     "sync_dir": str(Path.home() / "obsideo-sync"),
 }
 

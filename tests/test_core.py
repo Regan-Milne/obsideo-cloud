@@ -39,6 +39,7 @@ def s3_creds(monkeypatch):
 
 
 def test_list_prefix_parses_folders_and_files(s3_creds, monkeypatch):
+    monkeypatch.setattr(storage, "_names_on", lambda: False)  # plain keys for this test
     fake = mock.MagicMock()
     fake.list_objects_v2.return_value = {
         "CommonPrefixes": [{"Prefix": "docs/"}, {"Prefix": "photos/"}],
@@ -58,6 +59,7 @@ def test_list_prefix_parses_folders_and_files(s3_creds, monkeypatch):
 
 
 def test_get_uses_full_object_get(s3_creds, monkeypatch):
+    monkeypatch.setattr(storage, "_names_on", lambda: False)  # check exact plain key
     fake = mock.MagicMock()
     body = mock.MagicMock(); body.read.return_value = b"ciphertext"
     fake.get_object.return_value = {"Body": body}
@@ -66,3 +68,57 @@ def test_get_uses_full_object_get(s3_creds, monkeypatch):
     assert storage.get("k") == b"ciphertext"
     fake.get_object.assert_called_once_with(Bucket="obsideo", Key="k")
     assert not fake.download_file.called  # never ranged
+
+
+# ── filename encryption (Level 1 metadata privacy) ──────────────────────────
+
+def test_name_encryption_round_trip():
+    from obsideo_core import names
+    tok = names.encrypt_name("my secret folder")
+    assert tok != "my secret folder"
+    assert "/" not in tok  # safe as a single path component
+    assert names.decrypt_name(tok) == "my secret folder"
+
+
+def test_name_encryption_is_deterministic():
+    from obsideo_core import names
+    # Deterministic so server-side prefix listing works.
+    assert names.encrypt_name("photos") == names.encrypt_name("photos")
+
+
+def test_encrypt_path_per_component():
+    from obsideo_core import names
+    enc = names.encrypt_path("a/b/c.txt")
+    assert enc.count("/") == 2  # structure preserved (3 components)
+    assert "a" not in enc and "c.txt" not in enc  # names hidden
+
+
+def test_storage_stores_under_encrypted_key(s3_creds, monkeypatch):
+    fake = mock.MagicMock()
+    monkeypatch.setattr(storage, "_s3", lambda: fake)
+    monkeypatch.setattr(storage, "ensure_bucket", lambda: None)
+    storage.put("docs/secret.txt", b"x")  # names ON by default
+    _, args, kwargs = fake.mock_calls[0]
+    stored_key = args[2]
+    assert "secret.txt" not in stored_key and "docs" not in stored_key
+
+
+def test_list_prefix_decrypts_names_roundtrip(s3_creds, monkeypatch):
+    """Store under encrypted keys, then list and confirm real names come back."""
+    from obsideo_core import names
+    enc_prefix = names.encrypt_path("vault") + "/"
+    enc_file = enc_prefix + names.encrypt_name("passwords.txt")
+    enc_sub = enc_prefix + names.encrypt_name("sub") + "/"
+
+    fake = mock.MagicMock()
+    fake.list_objects_v2.return_value = {
+        "CommonPrefixes": [{"Prefix": enc_sub}],
+        "Contents": [{"Key": enc_file, "Size": 99}],
+        "IsTruncated": False,
+    }
+    monkeypatch.setattr(storage, "_s3", lambda: fake)
+
+    out = storage.list_prefix("vault")
+    assert out["folders"] == ["sub"]
+    assert out["files"][0]["name"] == "passwords.txt"
+    assert out["files"][0]["key"] == "vault/passwords.txt"  # real path for re-fetch

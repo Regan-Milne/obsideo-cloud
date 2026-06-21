@@ -28,6 +28,19 @@ _MULTIPART_CHUNK = 16 * 1024 * 1024  # 16 MiB
 _FOLDER_MARKER = ".keep"
 
 
+def _names_on() -> bool:
+    return config.load_config().get("encrypt_names", True)
+
+
+def _skey(key: str) -> str:
+    """Map a real path key to the on-server storage key — encrypts each path
+    component when name-encryption is on, so Obsideo never sees real names."""
+    if not key or not _names_on():
+        return key
+    from obsideo_core import names
+    return names.encrypt_path(key)
+
+
 class StorageConfigError(EnvironmentError):
     """Raised when Obsideo credentials are missing/incomplete."""
 
@@ -121,7 +134,7 @@ def put(key: str, data: bytes) -> str:
     ensure_bucket()
     transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
                               multipart_chunksize=_MULTIPART_CHUNK)
-    s3.upload_fileobj(io.BytesIO(data), bucket(), key, Config=transfer)
+    s3.upload_fileobj(io.BytesIO(data), bucket(), _skey(key), Config=transfer)
     return key
 
 
@@ -132,7 +145,7 @@ def upload_file(local_path: Path, key: str) -> str:
     transfer = TransferConfig(multipart_threshold=_MULTIPART_CHUNK,
                               multipart_chunksize=_MULTIPART_CHUNK)
     with open(local_path, "rb") as f:
-        s3.upload_fileobj(f, bucket(), key, Config=transfer)
+        s3.upload_fileobj(f, bucket(), _skey(key), Config=transfer)
     return key
 
 
@@ -140,7 +153,7 @@ def get(key: str) -> bytes:
     """Download an object by key (single full-object GET — no Range)."""
     from botocore.exceptions import ClientError
     try:
-        resp = _s3().get_object(Bucket=bucket(), Key=key)
+        resp = _s3().get_object(Bucket=bucket(), Key=_skey(key))
         return resp["Body"].read()
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
@@ -156,14 +169,14 @@ def download_file(key: str, local_path: Path) -> None:
 
 
 def delete(key: str) -> None:
-    _s3().delete_object(Bucket=bucket(), Key=key)
+    _s3().delete_object(Bucket=bucket(), Key=_skey(key))
 
 
 def head(key: str) -> dict | None:
     """Return {'size','last_modified'} or None if absent."""
     from botocore.exceptions import ClientError
     try:
-        h = _s3().head_object(Bucket=bucket(), Key=key)
+        h = _s3().head_object(Bucket=bucket(), Key=_skey(key))
         return {"size": h.get("ContentLength"), "last_modified": h.get("LastModified")}
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
@@ -183,32 +196,47 @@ def list_prefix(prefix: str = "", delimiter: str = "/") -> dict:
     level. Folder-marker objects (keys ending in '/') are hidden from files.
     """
     s3 = _s3()
+    on = _names_on()
     norm = prefix
     if norm and not norm.endswith("/"):
         norm += "/"
 
+    # The server query runs against the ENCRYPTED prefix; the returned tokens are
+    # decrypted back to real names for display. Returned `key` is the REAL path so
+    # callers (get/rm/cd) can re-encrypt it transparently.
+    if on and norm:
+        from obsideo_core import names
+        enc_prefix = names.encrypt_path(norm) + "/"
+    else:
+        enc_prefix = norm
+
+    def _name(token: str) -> str:
+        if not on:
+            return token
+        from obsideo_core import names
+        return names.safe_decrypt_name(token)[0]
+
     folders, files = [], []
     token = None
     while True:
-        kwargs = dict(Bucket=bucket(), Prefix=norm, Delimiter=delimiter)
+        kwargs = dict(Bucket=bucket(), Prefix=enc_prefix, Delimiter=delimiter)
         if token:
             kwargs["ContinuationToken"] = token
         resp = s3.list_objects_v2(**kwargs)
 
         for cp in resp.get("CommonPrefixes", []):
-            p = cp["Prefix"]
-            name = p[len(norm):].rstrip("/")
-            if name:
-                folders.append(name)
+            enc_name = cp["Prefix"][len(enc_prefix):].rstrip("/")
+            if enc_name:
+                folders.append(_name(enc_name))
 
         for obj in resp.get("Contents", []):
             key = obj["Key"]
-            if key == norm or key.endswith("/"):
+            if key == enc_prefix or key.endswith("/"):
                 continue  # the folder marker itself
-            name = key[len(norm):]
+            name = _name(key[len(enc_prefix):])
             if name == _FOLDER_MARKER:
                 continue  # hide the .keep placeholder that makes empty folders visible
-            files.append({"name": name, "key": key, "size": obj.get("Size", 0)})
+            files.append({"name": name, "key": norm + name, "size": obj.get("Size", 0)})
 
         if resp.get("IsTruncated"):
             token = resp.get("NextContinuationToken")
