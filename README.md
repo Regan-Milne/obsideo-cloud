@@ -6,7 +6,7 @@ Obsideo's gateway, coordinator, and storage providers only ever see ciphertext.
 Your data lands on three independent providers (RF=3).
 
 ```
-pip install obsideo-cloud
+pip install git+https://github.com/Regan-Milne/obsideo-cloud
 obsideo-cloud login    # email -> 3 GB free
 obsideo-cloud          # open the shell (or just 'obsideo')
 ```
