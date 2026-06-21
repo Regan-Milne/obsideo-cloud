@@ -366,6 +366,11 @@ def _fetch_usage() -> dict | None:
 def main():
     argv = sys.argv[1:]
 
+    # Standard --help / -h (cmd.Cmd would otherwise read "--help" as a command).
+    if argv and argv[0] in ("-h", "--help", "help"):
+        ObsideoShell().onecmd("help")
+        return
+
     # `obsideo login` is interactive and handled specially.
     if argv and argv[0] == "login":
         ok = run_login()
