@@ -1,4 +1,4 @@
-# obsideo-drive
+# obsideo-cli
 
 **Encrypted storage we can't read.** Save, browse, and sync whatever you want
 from your terminal. Files are encrypted on your machine before they leave, so
@@ -6,7 +6,7 @@ Obsideo's gateway, coordinator, and storage providers only ever see ciphertext.
 Your data lands on three independent providers (RF=3).
 
 ```
-pip install obsideo-drive
+pip install obsideo-cli
 obsideo login    # email -> 3 GB free
 obsideo          # open the shell
 ```
