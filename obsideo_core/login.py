@@ -42,17 +42,22 @@ def start(email: str, url: str | None = None) -> None:
     _post_json(f"{url}/v1/auth/start", {"email": email})
 
 
-def verify(email: str, code: str, url: str | None = None) -> dict:
+def verify(email: str, code: str, url: str | None = None,
+           referral_code: str | None = None) -> dict:
     """Verify the code + provision an account. Generates the local signing key,
-    sends only its public half, persists the returned credentials. Returns the
+    sends only its public half, persists the returned credentials. An optional
+    referral_code (a friend's invite) grants the new account +1 GB. Returns the
     credential bundle.
     """
     url = url or config.signup_url()
     signing_pubkey = identity.get_or_create_signing_pubkey()
-    creds = _post_json(f"{url}/v1/auth/verify", {
+    payload = {
         "email": email,
         "code": code,
         "customer_signing_public_key": signing_pubkey,
-    })
+    }
+    if referral_code:
+        payload["referral_code"] = referral_code
+    creds = _post_json(f"{url}/v1/auth/verify", payload)
     config.write_credentials(creds)
     return creds

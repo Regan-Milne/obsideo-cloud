@@ -89,8 +89,14 @@ def test_name_encryption_is_deterministic():
 def test_encrypt_path_per_component():
     from obsideo_core import names
     enc = names.encrypt_path("a/b/c.txt")
-    assert enc.count("/") == 2  # structure preserved (3 components)
-    assert "a" not in enc and "c.txt" not in enc  # names hidden
+    segs = enc.split("/")
+    assert len(segs) == 3  # structure preserved (3 components)
+    # Each component is hidden (token != plaintext) yet round-trips back. Compare
+    # per-segment rather than substring-scanning the whole path: a 1-char name
+    # like "a" appears by chance inside base64 tokens, which made this flaky.
+    for plain, tok in zip(["a", "b", "c.txt"], segs):
+        assert tok != plain
+        assert names.decrypt_name(tok) == plain
 
 
 def test_storage_stores_under_encrypted_key(s3_creds, monkeypatch):
@@ -122,3 +128,27 @@ def test_list_prefix_decrypts_names_roundtrip(s3_creds, monkeypatch):
     assert out["folders"] == ["sub"]
     assert out["files"][0]["name"] == "passwords.txt"
     assert out["files"][0]["key"] == "vault/passwords.txt"  # real path for re-fetch
+
+
+# ── login: referral code threading ────────────────────────────────────────────
+
+def test_verify_includes_referral_code_when_given(monkeypatch):
+    from obsideo_core import login, identity, config
+    sent = {}
+    monkeypatch.setattr(login, "_post_json", lambda url, payload: sent.update(payload) or {"access_key": "AKIA", "secret_key": "s"})
+    monkeypatch.setattr(identity, "get_or_create_signing_pubkey", lambda: "obk_sig_" + "A" * 43)
+    monkeypatch.setattr(config, "write_credentials", lambda creds: None)
+
+    login.verify("a@b.com", "123456", url="http://x", referral_code="ABCD234")
+    assert sent["referral_code"] == "ABCD234"
+
+
+def test_verify_omits_referral_code_when_blank(monkeypatch):
+    from obsideo_core import login, identity, config
+    sent = {}
+    monkeypatch.setattr(login, "_post_json", lambda url, payload: sent.update(payload) or {"access_key": "AKIA", "secret_key": "s"})
+    monkeypatch.setattr(identity, "get_or_create_signing_pubkey", lambda: "obk_sig_" + "A" * 43)
+    monkeypatch.setattr(config, "write_credentials", lambda creds: None)
+
+    login.verify("a@b.com", "123456", url="http://x")
+    assert "referral_code" not in sent  # never send an empty/None code

@@ -49,6 +49,15 @@ def _human(n: int | None) -> str:
         f /= 1024
 
 
+def _gb(n) -> str:
+    """Format a GB count for display: drop a trailing .0 (2.0 -> '2', 2.5 -> '2.5')."""
+    try:
+        f = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    return str(int(f)) if f == int(f) else f"{f:g}"
+
+
 # ── Operator notices (server-driven broadcasts) ──────────────────────────────
 
 _SEEN_FILE = config.CONFIG_DIR / "seen_notices"
@@ -297,9 +306,11 @@ def run_login(url: str | None = None) -> bool:
     print(" sent.")
     print(f"Check {email} for a verification code (it may be in spam).")
     code = input("Enter verification code: ").strip()
+    # Optional friend's referral code -> +1 GB (4 GB instead of 3). Blank = skip.
+    referral_code = input("Referral code from a friend (optional, Enter to skip): ").strip()
     print("Verifying + provisioning storage...", end="", flush=True)
     try:
-        creds = login.verify(email, code, url)
+        creds = login.verify(email, code, url, referral_code=referral_code or None)
     except login.LoginError as e:
         print(f"\nVerification failed: {e}")
         return False
@@ -308,6 +319,11 @@ def run_login(url: str | None = None) -> bool:
     # Make sure the data key exists + nudge the user to back it up.
     crypto.data_key()
     print(f"\nYou're all set. {creds.get('quota_gb', 3)} GB free.")
+    if referral_code:
+        if creds.get("referral_applied"):
+            print(f"Referral applied - enjoy the extra space! (code {referral_code.upper()})")
+        else:
+            print(f"That referral code ({referral_code}) wasn't recognized, so no bonus was added.")
     if not creds.get("gateway_registered", True):
         print("Note: storage activation is finishing rollout; if an upload fails, retry shortly.")
     print("Your files are encrypted with a local key. Back it up:")
@@ -331,6 +347,7 @@ class ObsideoShell(cmd.Cmd):
         "    ls / cd / mkdir             browse your files\n"
         "    sync push / pull / status   mirror your sync folder\n"
         "    account                     your plan and usage\n"
+        "    refer                       invite friends for free space\n"
         "    about / faq / messages      learn more / team news\n\n"
         "  Type 'help <command>' for details (e.g. 'help sync'), or 'exit' to quit.\n"
     )
@@ -602,6 +619,15 @@ class ObsideoShell(cmd.Cmd):
                 print(f"     Used:  {_human(used)} across {n} file(s)")
             except Exception:
                 print("     Used:  (couldn't read storage just now)")
+        # Referral summary (only for email-login accounts; pre-shim accounts have
+        # no signup token and just don't show this line).
+        ref = _fetch_referral() if config.account_token() else None
+        if ref:
+            if ref.get("active"):
+                print(f"     Referrals: code {ref['code']} - {ref['active']} active, "
+                      f"+{_gb(ref.get('earned_gb', 0))} GB earned  ('refer' for more)")
+            else:
+                print(f"     Referrals: code {ref['code']} - invite friends for free space ('refer')")
         print(f"     Bucket: {storage.bucket()}")
         print(f"     Sync folder: {sync_mod.ensure_sync_dir()}")
         print(f"     Keys: {config.CONFIG_DIR}  (back up data.key)")
@@ -652,7 +678,8 @@ class ObsideoShell(cmd.Cmd):
   A: `config` shows them; `config set sync_dir <path>` / `config set encrypt_names false`.
 
   Q: More space?
-  A: Reply to any Obsideo email to upgrade. (A referral program is coming.)
+  A: Invite friends with `refer` - they get +1 GB, you get +2 GB once they
+     upload. Or reply to any Obsideo email to upgrade.
 
   Q: Updating?
   A: pip install -U obsideo-cli  - the CLI also nudges you when an update is out.
@@ -676,6 +703,50 @@ class ObsideoShell(cmd.Cmd):
         print("\n  -- Messages from the Obsideo team --")
         for n in notices:
             print(f"   - {n.get('body', '').strip()}")
+        print()
+
+    # ── refer ─────────────────────────────────────────────────────────────────
+    def do_refer(self, arg):
+        """Invite friends for free space. Usage: refer
+
+        Share your code: each friend who joins with it gets +1 GB, and you get
+        +2 GB once they actually upload something. No limit."""
+        if not self._require_login():
+            return
+        if not config.account_token():
+            print(
+                "\n  Referrals need an email login. Run 'login' to sign up / sign in"
+                "\n  with your email, then 'refer' shows your invite code.\n"
+            )
+            return
+        info = _fetch_referral()
+        if not info:
+            print("\n  Couldn't load your referral info just now - try again shortly.\n")
+            return
+
+        each = info.get("owner_bonus_gb_each", 2)
+        redeemer = info.get("redeemer_bonus_gb", 1)
+        print()
+        print("  -- Invite friends, get free space --------------------------")
+        print(f"     Your code:  {info['code']}")
+        print(f"     Share it: a friend runs `obsideo login` and enters your code.")
+        print(f"     They get +{_gb(redeemer)} GB; you get +{_gb(each)} GB once they upload.")
+        print()
+        invited = info.get("invited", 0)
+        active = info.get("active", 0)
+        pending = info.get("pending", 0)
+        earned = info.get("earned_gb", 0)
+        if invited:
+            print(f"     Invited: {invited}   Active: {active}   Pending upload: {pending}")
+            print(f"     Earned so far: +{_gb(earned)} GB   (your quota: {_gb(info.get('quota_gb', 0))} GB)")
+        else:
+            print("     No referrals yet - share your code to start earning.")
+        if info.get("newly_credited"):
+            n = info["newly_credited"]
+            print(f"     ✨ {n} friend(s) just activated - +{_gb(n*each)} GB added!")
+        print("  ------------------------------------------------------------")
+        print("  Bonuses are a promotional perk; Obsideo reserves the right to change")
+        print("  or end the program and to revoke bonuses for abuse.")
         print()
 
     # ── sync ──────────────────────────────────────────────────────────────────
@@ -750,6 +821,25 @@ def _fetch_usage() -> dict | None:
             headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
         )
         with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def _fetch_referral() -> dict | None:
+    """Referral code + stats from the signup service (Bearer account token). Also
+    triggers the server-side lazy credit check for any friend who just became
+    active. Returns None for accounts without a signup token (e.g. pre-shim
+    accounts) or if the service is unreachable — callers handle that gracefully."""
+    token = config.account_token()
+    if not token:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{config.signup_url()}/v1/account/referral",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=20, context=config.ssl_context()) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None

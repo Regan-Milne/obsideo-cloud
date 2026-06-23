@@ -330,3 +330,55 @@ def test_precmd_strips_obsideo_prefix():
     assert sh.precmd("obsideo ls") == "ls"
     assert sh.precmd("obsideo login") == "login"
     assert sh.precmd("ls") == "ls"  # unchanged when no prefix
+
+
+# ── referral program ──────────────────────────────────────────────────────────
+
+def test_gb_formats_cleanly():
+    assert cli._gb(2.0) == "2" and cli._gb(2) == "2"
+    assert cli._gb(2.5) == "2.5"
+    assert cli._gb(0) == "0"
+
+
+def test_refer_shows_code_and_stats(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    monkeypatch.setattr(cli, "_fetch_referral", lambda: {
+        "code": "ABCD234", "invited": 2, "active": 1, "pending": 1,
+        "earned_gb": 2.0, "newly_credited": 1, "owner_bonus_gb_each": 2,
+        "redeemer_bonus_gb": 1, "quota_gb": 5.0,
+    })
+    cli.ObsideoShell().do_refer("")
+    out = capsys.readouterr().out
+    assert "ABCD234" in out
+    assert "Invited: 2" in out and "Active: 1" in out
+    assert "+2 GB earned" not in out  # that phrasing is the account line, not refer
+    assert "just activated" in out  # newly_credited celebration
+    assert "reserves the right" in out  # disclaimer present
+
+
+def test_refer_without_token_guides_to_login(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "account_token", lambda: None)
+    cli.ObsideoShell().do_refer("")
+    out = capsys.readouterr().out.lower()
+    assert "login" in out and "email" in out
+
+
+def test_refer_handles_unreachable_service(monkeypatch, capsys):
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    monkeypatch.setattr(cli, "_fetch_referral", lambda: None)
+    cli.ObsideoShell().do_refer("")
+    assert "couldn't load" in capsys.readouterr().out.lower()
+
+
+def test_account_shows_referral_line(monkeypatch, tmp_path, capsys):
+    from obsideo import sync
+    monkeypatch.setattr(cli, "_fetch_account_info",
+                        lambda: {"tier": "promo", "used_bytes": 1, "quota_bytes": 5_368_709_120})
+    monkeypatch.setattr(cli.config, "account_token", lambda: "obt_x")
+    monkeypatch.setattr(cli, "_fetch_referral",
+                        lambda: {"code": "ABCD234", "active": 2, "earned_gb": 4.0})
+    monkeypatch.setattr(cli.storage, "bucket", lambda: "obsideo")
+    monkeypatch.setattr(sync, "_sync_dir", lambda: tmp_path / "s")
+    cli.ObsideoShell().do_account("")
+    out = capsys.readouterr().out
+    assert "Referrals: code ABCD234" in out and "4 GB earned" in out
