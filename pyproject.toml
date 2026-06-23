@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "obsideo-cloud"
+name = "obsideo-drive"
 version = "0.2.0"
 description = "Obsideo Cloud - encrypted storage we can't read. Save, browse, and sync whatever you want, from your terminal."
 readme = "README.md"
@@ -18,8 +18,8 @@ dependencies = [
 Homepage = "https://obsideo.io"
 
 [project.scripts]
-obsideo-cloud = "obsideo.cli:main"
 obsideo = "obsideo.cli:main"
+obsideo-drive = "obsideo.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
