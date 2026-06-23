@@ -112,7 +112,7 @@ def show_notices() -> None:
 _BANNER = r"""
     /\
    /  \    OBSIDEO DRIVE
-   \  /    encrypted storage we can't read
+   \  /    encrypted storage not even we can read
     \/
 """
 
