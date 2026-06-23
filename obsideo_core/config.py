@@ -28,16 +28,31 @@ _DEFAULT_REGION = "us-east-1"
 # Sent on every request to the signup shim. A descriptive User-Agent avoids
 # Cloudflare's default-`Python-urllib` bot block (HTTP 403 / error 1010) that
 # fronts signup.obsideo.io; without it, `obsideo login` and usage lookups fail.
+PACKAGE = "obsideo-cli"  # PyPI distribution name (used for version + update checks)
 try:
     from importlib.metadata import version as _pkg_version, PackageNotFoundError
     try:
-        _VERSION = _pkg_version("obsideo-cloud")
+        _VERSION = _pkg_version(PACKAGE)
     except PackageNotFoundError:
-        _VERSION = "0.2.0"
+        _VERSION = "0.2.1"
 except Exception:
-    _VERSION = "0.2.0"
+    _VERSION = "0.2.1"
 
-USER_AGENT = f"obsideo-cloud/{_VERSION}"
+VERSION = _VERSION
+USER_AGENT = f"obsideo-cli/{_VERSION}"
+
+
+def ssl_context():
+    """An SSL context that verifies against certifi's CA bundle. urllib otherwise
+    trusts the OS certificate store, which is often incomplete on fresh/locked-down
+    Windows installs (CERTIFICATE_VERIFY_FAILED on a perfectly valid cert). Falls
+    back to the system default if certifi isn't importable."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 def write_secret_file(path: Path, value: str) -> None:

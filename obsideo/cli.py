@@ -11,6 +11,7 @@ leaves, so Obsideo can't read it. An interactive shell plus one-shot commands.
 import cmd
 import os
 import shlex
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -88,7 +89,7 @@ def show_notices() -> None:
             f"{config.signup_url()}/v1/notices",
             headers={"User-Agent": config.USER_AGENT},
         )
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=4, context=config.ssl_context()) as resp:
             notices = json.loads(resp.read().decode()).get("notices", [])
     except Exception:
         return
@@ -104,6 +105,116 @@ def show_notices() -> None:
         print(f"{color}{marker} Obsideo:{_RESET} {n.get('body', '').strip()}", file=sys.stderr)
         shown.append(nid)
     _mark_seen(shown)
+
+
+# ── Branding banner + version self-check ──────────────────────────────────────
+
+_BANNER = r"""
+    /\
+   /  \    OBSIDEO DRIVE
+   \  /    encrypted storage we can't read
+    \/
+"""
+
+_BANNER_SHOWN = False
+
+
+def _chrome_enabled() -> bool:
+    """Banner/prompt are human chrome: only on an interactive stdout, and never
+    when OBSIDEO_NO_BANNER / NO_COLOR is set. Keeps stdout clean for agents/pipes."""
+    if os.environ.get("OBSIDEO_NO_BANNER") or os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def show_banner() -> None:
+    """Branded ASCII banner to stderr, once per process, TTY-gated."""
+    global _BANNER_SHOWN
+    if _BANNER_SHOWN or not _chrome_enabled():
+        return
+    _BANNER_SHOWN = True
+    print(f"\033[36m{_BANNER}\033[0m", file=sys.stderr)
+
+
+def _usage_bar(pct: float, cells: int = 10) -> str:
+    filled = min(cells, max(0, round(pct * cells)))
+    return "#" * filled + "-" * (cells - filled)
+
+
+def show_status() -> None:
+    """One-line account status (tier · usage bar · upgrade hint) to stderr, TTY-gated.
+    Makes a network call, so it's shown at session start / post-login only."""
+    if not _chrome_enabled() or not config.is_logged_in():
+        return
+    usage = _fetch_usage()
+    if not usage:
+        return
+    used, quota = usage.get("used_bytes", 0), usage.get("quota_bytes", 0)
+    pct = usage.get("percent_used")
+    if pct is None:
+        pct = (used / quota) if quota else 0.0
+    hint = "  ·  \033[36mupgrade\033[0m for more" if pct >= 0.8 else ""
+    print(f"\033[2mFree\033[0m [{_usage_bar(pct)}] {_human(used)} of {_human(quota)}{hint}",
+          file=sys.stderr)
+
+
+def _parse_version(v: str) -> tuple:
+    """Lenient dotted-version → comparable int tuple. '0.2.10' > '0.2.9'."""
+    out = []
+    for part in v.split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+def _latest_pypi_version() -> str | None:
+    try:
+        req = urllib.request.Request(
+            f"https://pypi.org/pypi/{config.PACKAGE}/json",
+            headers={"User-Agent": config.USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=5, context=config.ssl_context()) as resp:
+            return json.loads(resp.read().decode())["info"]["version"]
+    except Exception:
+        return None
+
+
+def check_for_update() -> None:
+    """On interactive init: if PyPI has a newer obsideo-cli, offer to update now.
+    TTY-gated (never prompts agents/scripts), fail-silent (a network hiccup never
+    blocks startup). Disable with OBSIDEO_NO_UPDATE_CHECK."""
+    if not sys.stdout.isatty() or os.environ.get("OBSIDEO_NO_UPDATE_CHECK"):
+        return
+    current = config.VERSION
+    latest = _latest_pypi_version()
+    if not latest or _parse_version(latest) <= _parse_version(current):
+        return
+    print(f"\n\033[36mUpdate available: {current} -> {latest}\033[0m", file=sys.stderr)
+    try:
+        ans = input("Update now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        return
+    if ans not in ("", "y", "yes"):
+        print(f"Skipped. Update later with:  pip install -U {config.PACKAGE}", file=sys.stderr)
+        return
+    print(f"Updating to {latest}...", file=sys.stderr)
+    try:
+        rc = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-U", config.PACKAGE]
+        ).returncode
+    except Exception as e:
+        print(f"Update failed: {e}\nTry manually:  pip install -U {config.PACKAGE}", file=sys.stderr)
+        return
+    if rc == 0:
+        print(f"\nUpdated to {latest}. Restart `obsideo` to use the new version.", file=sys.stderr)
+        sys.exit(0)
+    print(f"Update didn't complete. Try:  pip install -U {config.PACKAGE}", file=sys.stderr)
 
 
 # ── Operator tooling: broadcast a message to all users ────────────────────────
@@ -148,7 +259,7 @@ def run_admin(argv: list) -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
             out = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:200]
@@ -482,7 +593,7 @@ class ObsideoShell(cmd.Cmd):
         if parts[0] == "set" and len(parts) == 3:
             key, value = parts[1], parts[2]
             cfg = config.load_config()
-            if key == "encrypt":
+            if key in ("encrypt", "encrypt_names"):
                 value = value.lower() in ("true", "1", "yes", "on")
             cfg[key] = value
             config.save_config(cfg)
@@ -515,7 +626,7 @@ def _fetch_usage() -> dict | None:
             f"{config.signup_url()}/v1/account/usage",
             headers={"Authorization": f"Bearer {token}", "User-Agent": config.USER_AGENT},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=config.ssl_context()) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None
@@ -523,6 +634,11 @@ def _fetch_usage() -> dict | None:
 
 def main():
     argv = sys.argv[1:]
+
+    # Branded banner on every init (stderr, TTY-gated). Skip for `admin` so
+    # operator tooling output stays clean.
+    if not (argv and argv[0] == "admin"):
+        show_banner()
 
     # Standard --help / -h (cmd.Cmd would otherwise read "--help" as a command).
     if argv and argv[0] in ("-h", "--help", "help"):
@@ -532,6 +648,8 @@ def main():
     # `obsideo login` is interactive and handled specially.
     if argv and argv[0] == "login":
         ok = run_login()
+        if ok:
+            show_status()
         sys.exit(0 if ok else 1)
 
     # `obsideo admin ...` is operator tooling, not a shell command.
@@ -543,10 +661,14 @@ def main():
 
     shell = ObsideoShell()
 
-    # One-shot: `obsideo ls`, `obsideo put file.txt`, etc.
+    # One-shot: `obsideo ls`, `obsideo put file.txt`, etc. No update prompt or
+    # status line here — one-shots stay fast and scriptable.
     if argv:
         shell.onecmd(" ".join(argv))
         return
+
+    # Interactive session ("initialization"): offer an update if one's out.
+    check_for_update()
 
     # First-run nudge: not logged in -> offer login.
     if not config.is_logged_in():
@@ -558,6 +680,7 @@ def main():
             print("Run 'obsideo login' when you're ready.")
             return
 
+    show_status()
     try:
         shell.cmdloop()
     except KeyboardInterrupt:

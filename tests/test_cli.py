@@ -151,3 +151,80 @@ def test_put_folder_into_cwd(shell, tmp_path):
     sh.do_cd("backup")
     sh.do_put(str(folder))
     assert "backup/docs/x.txt" in fake.objs
+
+
+# ── Banner + update check (0.2.1) ─────────────────────────────────────────────
+
+def test_banner_tty_gated_once(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_BANNER", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    cli._BANNER_SHOWN = False
+    cli.show_banner()
+    assert "OBSIDEO DRIVE" in capsys.readouterr().err
+    cli.show_banner()  # once per process
+    assert capsys.readouterr().err == ""
+    # non-tty: silent
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: False, raising=False)
+    cli._BANNER_SHOWN = False
+    cli.show_banner()
+    assert capsys.readouterr().err == ""
+
+
+def test_parse_version_ordering():
+    assert cli._parse_version("0.2.10") > cli._parse_version("0.2.9")
+    assert cli._parse_version("0.3.0") > cli._parse_version("0.2.99")
+    assert cli._parse_version("0.2.1") == cli._parse_version("0.2.1")
+    assert not (cli._parse_version("0.2.0") > cli._parse_version("0.2.1"))
+
+
+def test_update_check_silent_when_not_tty(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: False, raising=False)
+    called = []
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: called.append(1) or "9.9.9")
+    cli.check_for_update()
+    assert capsys.readouterr().err == ""
+    assert called == []  # short-circuits before any network call
+
+
+def test_update_check_noop_when_current(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(cli.config, "VERSION", "0.2.1")
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "0.2.1")  # not newer
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda *a: asked.append(1) or "y")
+    cli.check_for_update()
+    assert asked == []  # never prompts when already current
+    assert "Update available" not in capsys.readouterr().err
+
+
+def test_update_check_prompts_and_respects_no(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(cli.config, "VERSION", "0.2.1")
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "0.2.2")
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    ran = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: ran.append(a))
+    cli.check_for_update()
+    err = capsys.readouterr().err
+    assert "Update available: 0.2.1 -> 0.2.2" in err
+    assert ran == []  # declined -> no pip invocation
+
+
+def test_update_check_runs_pip_on_yes(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(cli.config, "VERSION", "0.2.1")
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "0.2.2")
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+    class _R:
+        returncode = 0
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: calls.append(a[0]) or _R())
+    with pytest.raises(SystemExit) as e:
+        cli.check_for_update()
+    assert e.value.code == 0
+    assert calls and calls[0][1:] == ["-m", "pip", "install", "-U", "obsideo-cli"]
