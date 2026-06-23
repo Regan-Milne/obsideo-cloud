@@ -106,6 +106,56 @@ def show_notices() -> None:
     _mark_seen(shown)
 
 
+# ── Branding: banner + status line (Phase 0) ──────────────────────────────────
+
+_BANNER_SHOWN = False  # print at most once per process
+
+
+def _color_enabled() -> bool:
+    """ANSI + banner are human chrome: emit only on an interactive stdout, and
+    let OBSIDEO_NO_BANNER (or NO_COLOR) force them off. Agents/pipes get nothing,
+    so stdout stays clean and parseable (the roadmap's dual-use litmus test)."""
+    if os.environ.get("OBSIDEO_NO_BANNER") or os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
+def show_banner() -> None:
+    """Compact branded wordmark to stderr, once per process. Cheap (no network),
+    TTY-gated. Shown on every CLI init so a human always knows what they're in."""
+    global _BANNER_SHOWN
+    if _BANNER_SHOWN or not _color_enabled():
+        return
+    _BANNER_SHOWN = True
+    bold, cyan, dim = "\033[1m", "\033[36m", "\033[2m"
+    print(f"{bold}{cyan}OBSIDEO{_RESET} {dim}cloud drive · encrypted storage we can't read{_RESET}",
+          file=sys.stderr)
+
+
+def _usage_bar(pct: float, cells: int = 10) -> str:
+    filled = min(cells, max(0, round(pct * cells)))
+    return "#" * filled + "-" * (cells - filled)
+
+
+def show_status() -> None:
+    """One-line account status to stderr: tier · usage bar · upgrade hint. Makes
+    a network call (account usage), so it's shown at session start / post-login,
+    NOT on every one-shot command (keeps `obsideo ls` snappy). TTY-gated."""
+    if not _color_enabled() or not config.is_logged_in():
+        return
+    usage = _fetch_usage()
+    if not usage:
+        return
+    used, quota = usage.get("used_bytes", 0), usage.get("quota_bytes", 0)
+    pct = usage.get("percent_used")
+    if pct is None:
+        pct = (used / quota) if quota else 0.0
+    dim, cyan = "\033[2m", "\033[36m"
+    hint = f"  ·  run {cyan}upgrade{_RESET} for more" if pct >= 0.8 else ""
+    print(f"{dim}Free{_RESET} [{_usage_bar(pct)}] {_human(used)} of {_human(quota)}{hint}",
+          file=sys.stderr)
+
+
 # ── Operator tooling: broadcast a message to all users ────────────────────────
 
 def run_admin(argv: list) -> int:
@@ -524,6 +574,11 @@ def _fetch_usage() -> dict | None:
 def main():
     argv = sys.argv[1:]
 
+    # Branded banner on every init (stderr, TTY-gated). Skip for `admin` so
+    # operator tooling output stays clean.
+    if not (argv and argv[0] == "admin"):
+        show_banner()
+
     # Standard --help / -h (cmd.Cmd would otherwise read "--help" as a command).
     if argv and argv[0] in ("-h", "--help", "help"):
         ObsideoShell().onecmd("help")
@@ -532,6 +587,8 @@ def main():
     # `obsideo login` is interactive and handled specially.
     if argv and argv[0] == "login":
         ok = run_login()
+        if ok:
+            show_status()
         sys.exit(0 if ok else 1)
 
     # `obsideo admin ...` is operator tooling, not a shell command.
@@ -558,6 +615,9 @@ def main():
             print("Run 'obsideo login' when you're ready.")
             return
 
+    # Interactive session, logged in: one-line account status (network call here
+    # only, never on one-shot commands).
+    show_status()
     try:
         shell.cmdloop()
     except KeyboardInterrupt:

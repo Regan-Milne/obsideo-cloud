@@ -151,3 +151,68 @@ def test_put_folder_into_cwd(shell, tmp_path):
     sh.do_cd("backup")
     sh.do_put(str(folder))
     assert "backup/docs/x.txt" in fake.objs
+
+
+# ── Phase 0: banner + status line ─────────────────────────────────────────────
+
+def test_banner_tty_gated_and_once(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_BANNER", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    cli._BANNER_SHOWN = False
+
+    cli.show_banner()
+    err1 = capsys.readouterr().err
+    assert "OBSIDEO" in err1
+    # Once per process: a second call is a no-op.
+    cli.show_banner()
+    assert capsys.readouterr().err == ""
+
+
+def test_banner_suppressed_for_non_tty_and_env(monkeypatch, capsys):
+    # Non-interactive stdout (agent / pipe): nothing on stderr, clean for parsing.
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: False, raising=False)
+    cli._BANNER_SHOWN = False
+    cli.show_banner()
+    assert capsys.readouterr().err == ""
+
+    # Even on a TTY, OBSIDEO_NO_BANNER forces it off.
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setenv("OBSIDEO_NO_BANNER", "1")
+    cli._BANNER_SHOWN = False
+    cli.show_banner()
+    assert capsys.readouterr().err == ""
+
+
+def test_usage_bar_fill():
+    assert cli._usage_bar(0.0) == "----------"
+    assert cli._usage_bar(1.0) == "##########"
+    assert cli._usage_bar(0.5) == "#####-----"
+
+
+def test_status_line_shows_upgrade_hint_over_threshold(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("OBSIDEO_NO_BANNER", raising=False)
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: True)
+    monkeypatch.setattr(
+        cli, "_fetch_usage",
+        lambda: {"used_bytes": 2_700_000_000, "quota_bytes": 3_000_000_000, "percent_used": 0.9},
+    )
+    cli.show_status()
+    err = capsys.readouterr().err
+    assert "Free" in err and "upgrade" in err
+
+    # Under threshold: no upgrade nudge.
+    monkeypatch.setattr(
+        cli, "_fetch_usage",
+        lambda: {"used_bytes": 300_000_000, "quota_bytes": 3_000_000_000, "percent_used": 0.1},
+    )
+    cli.show_status()
+    assert "upgrade" not in capsys.readouterr().err
+
+
+def test_status_line_silent_when_logged_out(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli.config, "is_logged_in", lambda: False)
+    cli.show_status()
+    assert capsys.readouterr().err == ""
